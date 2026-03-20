@@ -1,7 +1,8 @@
-import os, base64, httpx
-from fastapi import FastAPI
+import os, base64, io
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from PIL import Image
+import json
 
 app = FastAPI(title="ANIMET Backend")
 
@@ -12,14 +13,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-HF_KEY = os.getenv("HF_API_KEY")
-HF_URL = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell"
-
-class GenerateRequest(BaseModel):
-    prompt: str
-    frame_num: int = 1
-    total_frames: int = 1
-
 @app.get("/")
 def root():
     return {"status": "ANIMET backend running!"}
@@ -28,16 +21,23 @@ def root():
 def health():
     return {"status": "ok"}
 
-@app.post("/generate")
-async def generate_frame(req: GenerateRequest):
-    if not HF_KEY:
-        raise Exception("HF_API_KEY not set")
-    full_prompt = f"{req.prompt}, frame {req.frame_num} of {req.total_frames}, black and white manga art, detailed ink lines"
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            HF_URL,
-            headers={"Authorization": f"Bearer {HF_KEY}"},
-            json={"inputs": full_prompt},
-        )
-    image_b64 = base64.b64encode(response.content).decode("utf-8")
-    return {"image_b64": image_b64, "frame_num": req.frame_num}
+@app.post("/interpolate")
+async def interpolate(
+    panel1: UploadFile = File(...),
+    panel2: UploadFile = File(...),
+    num_frames: int = Form(default=15)
+):
+    img1 = Image.open(io.BytesIO(await panel1.read())).convert("RGBA")
+    img2 = Image.open(io.BytesIO(await panel2.read())).convert("RGBA")
+    img2 = img2.resize(img1.size)
+
+    frames = []
+    for i in range(num_frames):
+        alpha = i / (num_frames - 1)
+        frame = Image.blend(img1, img2, alpha)
+        buf = io.BytesIO()
+        frame.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        frames.append(b64)
+
+    return {"frames": frames, "count": len(frames)}
